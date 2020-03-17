@@ -3,14 +3,14 @@ import docker
 import argparse
 from textwrap import dedent
 
-def variantIndelConverter(client, volumes, container, chromosome, start, end, ref, alt, to_dash):
+def variantIndelConverter(client, volumes, container, reference, chromosome, start, end, ref, alt, to_dash):
     if to_dash is False:   # input with '-'
         if ref != '-' and alt != '-' and len(ref) == 1 and len(alt) == 1:   # SNV
             return chromosome, start, end, ref, alt
         elif ref == '-':   # INS
-            return dash_to_noDash_INS(client, volumes, container, chromosome, start, end, ref, alt)
+            return dash_to_noDash_INS(client, volumes, container, reference, chromosome, start, end, ref, alt)
         elif alt == '-':   # DEL
-            return dash_to_noDash_DEL(client, volumes, container, chromosome, start, end, ref, alt)
+            return dash_to_noDash_DEL(client, volumes, container, reference, chromosome, start, end, ref, alt)
     elif to_dash is True:   # input without '-'
         if len(ref) == 1 and len(alt) == 1:   # SNV
             return chromosome, start, end, ref, alt
@@ -20,26 +20,26 @@ def variantIndelConverter(client, volumes, container, chromosome, start, end, re
             return noDash_to_dash_DEL(chromosome, start, end, ref, alt)
     return None
 
-def getNucleotide(client, volumes, container, chromosome, start, end):
+def getNucleotide(client, volumes, container, reference, chromosome, start, end):
     if chromosome.startswith('chr') is False:
         chromosome = 'chr' + chromosome
-    logs = container.exec_run("samtools faidx /ref/ucsc.hg19.fasta %s:%s-%s" %(chromosome, start, end), stdout=True, stderr=True, stream=True)
+    logs = container.exec_run("samtools faidx /ref/%s %s:%s-%s" %(reference.split('/')[-1], chromosome, start, end), stdout=True, stderr=True, stream=True)
     for i in logs[1]:
         res = i.decode('utf-8').split()
     if len(res) == 2:
         return res[1].upper()
     return None
 
-def dash_to_noDash_INS(client, volumes, container, chromosome, start, end, ref, alt):
+def dash_to_noDash_INS(client, volumes, container, reference, chromosome, start, end, ref, alt):
     """ chr1 13417 13417 - GAGA   to   chr1 13417 13417 C CGAGA (require fetch from reference)"""
-    nt = getNucleotide(client, volumes, container, chromosome, start, start)
+    nt = getNucleotide(client, volumes, container, reference, chromosome, start, start)
     if nt is not None:
         return chromosome, start, end, nt, nt + alt
     return chromosome, start, end, ref, alt
 
-def dash_to_noDash_DEL(client, volumes, container, chromosome, start, end, ref, alt):
+def dash_to_noDash_DEL(client, volumes, container, reference, chromosome, start, end, ref, alt):
     """ chr1 10145 10145 A -   to   chr1 10144 10145 TA T (require fetch from reference)"""
-    nt = getNucleotide(client, volumes, container, chromosome, start - 1, start - 1)
+    nt = getNucleotide(client, volumes, container, reference, chromosome, start - 1, start - 1)
     if nt is not None:
         return chromosome, start - 1, end, nt + ref, nt
     return chromosome, start, end, ref, alt
@@ -115,7 +115,7 @@ Usage:
                     start = int(sep[1])
                     end = start + len(ref) - 1
                 # print('+', '\t'.join([chromosome, str(start), str(end), ref, alt]))
-                chromosome, start, end, ref, alt = variantIndelConverter(client, volumes, container, chromosome, start, end, ref, alt, args.to_dash)
+                chromosome, start, end, ref, alt = variantIndelConverter(client, volumes, container, args.in_reference, chromosome, start, end, ref, alt, args.to_dash)
                 # print('-', '\t'.join([chromosome, str(start), str(end), ref, alt]), '\n')
                 out.write('%s\t%s\t%s\t%s\t%s\t%s\n' %(chromosome, str(start), str(end), ref, alt, '\t'.join(others)))
             except Exception as e:
