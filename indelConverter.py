@@ -1,16 +1,23 @@
+import gzip
 import sys
 import docker
 import argparse
 from textwrap import dedent
 
-def variantIndelConverter(client, volumes, container, reference, chromosome, start, end, ref, alt, to_dash):
+def variantIndelConverter(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt, to_dash):
+    if alt == '*':
+        alt = '-'
+    if ref == '*':
+        ref = '-'
     if to_dash is False:   # input with '-'
+        if len(ref) != len(alt) and ref != '-' and alt != '-':
+            return chromosome, start, end, ref, alt
         if ref != '-' and alt != '-' and len(ref) == 1 and len(alt) == 1:   # SNV
             return chromosome, start, end, ref, alt
         elif ref == '-':   # INS
-            return dash_to_noDash_INS(client, volumes, container, reference, chromosome, start, end, ref, alt)
+            return dash_to_noDash_INS(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt)
         elif alt == '-':   # DEL
-            return dash_to_noDash_DEL(client, volumes, container, reference, chromosome, start, end, ref, alt)
+            return dash_to_noDash_DEL(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt)
     elif to_dash is True:   # input without '-'
         if len(ref) == 1 and len(alt) == 1:   # SNV
             return chromosome, start, end, ref, alt
@@ -20,26 +27,25 @@ def variantIndelConverter(client, volumes, container, reference, chromosome, sta
             return noDash_to_dash_DEL(chromosome, start, end, ref, alt)
     return None
 
-def getNucleotide(client, volumes, container, reference, chromosome, start, end):
+def getNucleotide(client, volumes, container, referenceGenome, chromosome, start, end):
     if chromosome.startswith('chr') is False:
         chromosome = 'chr' + chromosome
-    logs = container.exec_run("samtools faidx /ref/%s %s:%s-%s" %(reference.split('/')[-1], chromosome, start, end), stdout=True, stderr=True, stream=True)
-    for i in logs[1]:
-        res = i.decode('utf-8').split()
+    logs = container.exec_run("samtools faidx /ref/%s %s:%s-%s" %(referenceGenome, chromosome, start, end), stdout=True, stderr=True, stream=True)
+    res = next(logs).decode('utf-8').split()
     if len(res) == 2:
         return res[1].upper()
     return None
 
-def dash_to_noDash_INS(client, volumes, container, reference, chromosome, start, end, ref, alt):
+def dash_to_noDash_INS(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt):
     """ chr1 13417 13417 - GAGA   to   chr1 13417 13417 C CGAGA (require fetch from reference)"""
-    nt = getNucleotide(client, volumes, container, reference, chromosome, start, start)
+    nt = getNucleotide(client, volumes, container, referenceGenome, chromosome, start, start)
     if nt is not None:
         return chromosome, start, end, nt, nt + alt
     return chromosome, start, end, ref, alt
 
-def dash_to_noDash_DEL(client, volumes, container, reference, chromosome, start, end, ref, alt):
+def dash_to_noDash_DEL(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt):
     """ chr1 10145 10145 A -   to   chr1 10144 10145 TA T (require fetch from reference)"""
-    nt = getNucleotide(client, volumes, container, reference, chromosome, start - 1, start - 1)
+    nt = getNucleotide(client, volumes, container, referenceGenome, chromosome, start - 1, start - 1)
     if nt is not None:
         return chromosome, start - 1, end, nt + ref, nt
     return chromosome, start, end, ref, alt
@@ -84,10 +90,12 @@ Usage:
     args = parser.parse_args()
 
     in_reference_path = '/'.join(args.in_reference.split('/')[:-1]) if '/' in args.in_reference else '$PWD'
+    referenceGenome = args.in_reference.split('/')[-1]
     client = docker.from_env()
     volumes = {
         in_reference_path: {'bind': '/ref', 'mode': 'rw'}
     }
+    print('new a container,', volumes)
     container = client.containers.run(image='biocontainers/samtools:1.3.1',
                                     command="/bin/bash",
                                     volumes=volumes,
@@ -97,30 +105,47 @@ Usage:
     container.start()
 
     out = open(args.out_file, 'w')
-    with open(args.in_file) as f:
-        for line in f:
-            if line.startswith('#'):
-                out.write(line)
-                continue
-            sep = line.strip('\n').split('\t')
-            try:
-                chromosome = sep[0]
-                ref = sep[3]
-                alt = sep[4]
-                others = sep[5:]
-                if args.type == 'txt':
-                    start = int(sep[1])
-                    end = int(sep[2])
-                elif args.type == 'vcf':
-                    start = int(sep[1])
-                    end = start + len(ref) - 1
-                # print('+', '\t'.join([chromosome, str(start), str(end), ref, alt]))
-                chromosome, start, end, ref, alt = variantIndelConverter(client, volumes, container, args.in_reference, chromosome, start, end, ref, alt, args.to_dash)
-                # print('-', '\t'.join([chromosome, str(start), str(end), ref, alt]), '\n')
-                out.write('%s\t%s\t%s\t%s\t%s\t%s\n' %(chromosome, str(start), str(end), ref, alt, '\t'.join(others)))
-            except Exception as e:
-                print(e)
-                out.write(line)
+    f = gzip.open(args.in_file, 'rb') if args.in_file.endswith('.gz') else open(args.in_file)
+    n = 0    
+    for line in f:
+        if args.in_file.endswith('.gz'):
+            line = line.decode('utf-8')
+        if line.startswith('#'):
+            out.write(line)
+            continue
+        sep = line.strip('\n').split('\t')
+        try:
+            chromosome = sep[0]
+            ref = sep[3]
+            alt = sep[4]
+            others = sep[5:]
+            if args.type == 'txt':
+                start = int(sep[1])
+                end = int(sep[2])
+            elif args.type == 'vcf':
+                start = int(sep[1])
+                end = start + len(ref) - 1
+            # print('+', '\t'.join([chromosome, str(start), str(end), ref, alt]))
+            chromosome, start, end, ref, alt = variantIndelConverter(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt, args.to_dash)
+            # print('-', '\t'.join([chromosome, str(start), str(end), ref, alt]), '\n')
+            out.write('%s\t%s\t%s\t%s\t%s\t%s\n' %(chromosome, str(start), str(end), ref, alt, '\t'.join(others)))
+        except Exception as e:
+            print(e)
+            out.write(line)
+
+        if n != 0 and n % 3000000 == 0:
+            container.stop()
+            container.remove()
+            container = client.containers.run(image='biocontainers/samtools:1.3.1',
+                                               command="/bin/bash",
+                                               volumes=volumes,
+                                               tty=True,
+                                               stdin_open=True,
+                                               detach=True)
+            container.start()
+            print('new a container,', volumes)
+        n += 1
+    print('processed %s variants' %n)
 
     container.stop()
     container.remove()
