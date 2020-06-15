@@ -31,7 +31,10 @@ def getNucleotide(client, volumes, container, referenceGenome, chromosome, start
     if chromosome.startswith('chr') is False:
         chromosome = 'chr' + chromosome
     logs = container.exec_run("samtools faidx /ref/%s %s:%s-%s" %(referenceGenome, chromosome, start, end), stdout=True, stderr=True, stream=True)
-    res = next(logs).decode('utf-8').split()
+    try:
+        res = next(logs).decode('utf-8').split()
+    except:   # no result from referenceGenome
+        return None
     if len(res) == 2:
         return res[1].upper()
     return None
