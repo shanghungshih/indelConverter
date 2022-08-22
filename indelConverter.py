@@ -1,10 +1,36 @@
 import gzip
-import sys
-import docker
 import argparse
 from textwrap import dedent
+from subprocess import PIPE, Popen
 
-def variantIndelConverter(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt, to_dash):
+class Faidx_processor:
+    # samtools faidx /root/ceph/staging/volume/pub/hg19.resource/1/Annotator/referenceGenome/ucsc.hg19.fasta
+    def __init__(self, path_samtools: str, path_ref: str):
+        self.path_samtools = path_samtools
+        self.path_ref = path_ref
+        self.base_cmd = [self.path_samtools, 'faidx', self.path_ref]
+    
+    def getNucleotide(self, chromosome, start, end) -> str:
+        if chromosome.startswith('chr') is False:
+            chromosome = 'chr' + chromosome
+        if chromosome == "chrMT":
+            chromosome = "chrM"
+        cmd = self.base_cmd + ["%s:%s-%s" % (chromosome, start, end)]
+        proc = Popen(cmd, stdout=PIPE, stderr=PIPE)
+        try:
+            outs, errs = proc.communicate()
+            res = outs.decode('utf-8').split()
+        except:   # no result from referenceGenome
+            return None
+        if len(res) == 2:
+            return res[1].upper()
+        else:
+            print("getNucleotide error(%s) with cmd: %s\n" % (errs, ' '.join(cmd)))
+        return None
+
+# process = Faidx_processor('samtools', '/root/ceph/staging/volume/pub/hg19.resource/1/Annotator/referenceGenome/ucsc.hg19.fasta')
+# process.getNucleotide('chrX', '129299784', '129299784')
+def variantIndelConverter(proc_faidx, chromosome, start, end, ref, alt, to_dash):
     if alt == '*':
         alt = '-'
     if ref == '*':
@@ -15,9 +41,9 @@ def variantIndelConverter(client, volumes, container, referenceGenome, chromosom
         if ref != '-' and alt != '-' and len(ref) == 1 and len(alt) == 1:   # SNV
             return chromosome, start, end, ref, alt
         elif ref == '-':   # INS
-            return dash_to_noDash_INS(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt)
+            return dash_to_noDash_INS(proc_faidx, chromosome, start, end, ref, alt)
         elif alt == '-':   # DEL
-            return dash_to_noDash_DEL(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt)
+            return dash_to_noDash_DEL(proc_faidx, chromosome, start, end, ref, alt)
     elif to_dash is True:   # input without '-'
         if len(ref) == 1 and len(alt) == 1:   # SNV
             return chromosome, start, end, ref, alt
@@ -27,28 +53,16 @@ def variantIndelConverter(client, volumes, container, referenceGenome, chromosom
             return noDash_to_dash_DEL(chromosome, start, end, ref, alt)
     return None
 
-def getNucleotide(client, volumes, container, referenceGenome, chromosome, start, end):
-    if chromosome.startswith('chr') is False:
-        chromosome = 'chr' + chromosome
-    logs = container.exec_run("samtools faidx /ref/%s %s:%s-%s" %(referenceGenome, chromosome, start, end), stdout=True, stderr=True, stream=True)
-    try:
-        res = next(logs).decode('utf-8').split()
-    except:   # no result from referenceGenome
-        return None
-    if len(res) == 2:
-        return res[1].upper()
-    return None
-
-def dash_to_noDash_INS(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt):
+def dash_to_noDash_INS(proc_faidx, chromosome, start, end, ref, alt):
     """ chr1 13417 13417 - GAGA   to   chr1 13417 13417 C CGAGA (require fetch from reference)"""
-    nt = getNucleotide(client, volumes, container, referenceGenome, chromosome, start, start)
+    nt = proc_faidx.getNucleotide(chromosome, start, start)
     if nt is not None:
         return chromosome, start, end, nt, nt + alt
     return chromosome, start, end, ref, alt
 
-def dash_to_noDash_DEL(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt):
+def dash_to_noDash_DEL(proc_faidx, chromosome, start, end, ref, alt):
     """ chr1 10145 10145 A -   to   chr1 10144 10145 TA T (require fetch from reference)"""
-    nt = getNucleotide(client, volumes, container, referenceGenome, chromosome, start - 1, start - 1)
+    nt = proc_faidx.getNucleotide(chromosome, start - 1, start - 1)
     if nt is not None:
         return chromosome, start - 1, end, nt + ref, nt
     return chromosome, start, end, ref, alt
@@ -82,30 +96,18 @@ Require inputs:
 5. to_dash (ex. chr1 99 99 T TA  to  chr1 100 100 - A)
 
 Usage:
-- python3 indelConverter.py --in_file data/dash.txt --in_reference ucsc.hg19.fasta --out_file data/out_dash.txt --type txt --to_dash false
+- python3 indelConverter.py --in_file data/dash.txt --in_reference ucsc.hg19.fasta --out_file data/out_dash.txt 
 """))
     required = parser.add_argument_group('required arguments')
-    required.add_argument('--in_file', type=str, help='input file')
-    required.add_argument('--out_file', type=str, help='output file')
-    required.add_argument('--in_reference', type=str, help='input corresponding reference fasta')
-    required.add_argument('--type', type=str, help='input file type')
-    required.add_argument('--to_dash', type=str2bool, help="if true, convert indel in input file to format with '-', else on the contrary")
+    required.add_argument('--in_file', type=str, help='input file', required=True)
+    required.add_argument('--out_file', type=str, help='output file', required=True)
+    required.add_argument('--in_reference', type=str, help='input corresponding reference fasta', required=True)
+    required.add_argument('--type', type=str, default='txt', choices=['txt', 'vcf'], help='input file type')
+    required.add_argument('--to_dash', action='store_true', help="if true, convert indel in input file to format with '-', else on the contrary")
+    required.add_argument('--cmd_samtools', type=str, help="samtools execute path", default='samtools')
     args = parser.parse_args()
 
-    in_reference_path = '/'.join(args.in_reference.split('/')[:-1]) if '/' in args.in_reference else '$PWD'
-    referenceGenome = args.in_reference.split('/')[-1]
-    client = docker.from_env()
-    volumes = {
-        in_reference_path: {'bind': '/ref', 'mode': 'rw'}
-    }
-    print('new a container,', volumes)
-    container = client.containers.run(image='biocontainers/samtools:1.3.1',
-                                    command="/bin/bash",
-                                    volumes=volumes,
-                                    tty=True,
-                                    stdin_open=True,
-                                    detach=True)
-    container.start()
+    proc_faidx = Faidx_processor(args.cmd_samtools, args.in_reference)
 
     out = open(args.out_file, 'w')
     f = gzip.open(args.in_file, 'rb') if args.in_file.endswith('.gz') else open(args.in_file)
@@ -129,26 +131,12 @@ Usage:
                 start = int(sep[1])
                 end = start + len(ref) - 1
             # print('+', '\t'.join([chromosome, str(start), str(end), ref, alt]))
-            chromosome, start, end, ref, alt = variantIndelConverter(client, volumes, container, referenceGenome, chromosome, start, end, ref, alt, args.to_dash)
+            chromosome, start, end, ref, alt = variantIndelConverter(proc_faidx, chromosome, start, end, ref, alt, args.to_dash)
             # print('-', '\t'.join([chromosome, str(start), str(end), ref, alt]), '\n')
             out.write('%s\t%s\t%s\t%s\t%s\t%s\n' %(chromosome, str(start), str(end), ref, alt, '\t'.join(others)))
         except Exception as e:
             print(e)
             out.write(line)
 
-        if n != 0 and n % 3000000 == 0:
-            container.stop()
-            container.remove()
-            container = client.containers.run(image='biocontainers/samtools:1.3.1',
-                                               command="/bin/bash",
-                                               volumes=volumes,
-                                               tty=True,
-                                               stdin_open=True,
-                                               detach=True)
-            container.start()
-            print('new a container,', volumes)
         n += 1
-    print('processed %s variants' %n)
-
-    container.stop()
-    container.remove()
+    print('processed %s variants' % n)
