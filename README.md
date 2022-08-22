@@ -1,8 +1,8 @@
 # indelConverter
 
 ## Prerequisite
-* docker (using biocontainers/samtools:1.3.1 to extract nucleotide from given position)
-* Python 3
+* samtools > 1.3
+* Python  > 3.7
 * corresponding referenece genome fasta
 
 ## Installation
@@ -20,14 +20,15 @@ git clone https://github.com/shanghungshih/indelConverter.git
 * `--in_reference` - input corresponding reference fasta
 * `--type` - input file type
 * `--to_dash` - if true, convert indel in input file to format with '-' (ex. `chr1 10144 10145 TA T`  to  `chr1 10144 10145 A -`), else on the contrary
+* `cmd_samtools` local samtools binary path
 
 ## Quick start
 ### Convert dash format to non-dash format for `txt`
 ```
-python3 indelConverter.py --in_file data/dash.txt --in_reference /path/to/reference/ucsc.hg19.fasta --out_file data/out_dash.txt --type txt --to_dash false
+python3 indelConverter.py --in_file data/dash.txt --in_reference /path/to/reference/ucsc.hg19.fasta --out_file data/out_dash.txt --type txt --cmd_samtools samtools
 ```
 
 ### Convert non-dash format to dash format for `vcf` (example file will be added in future, please use your own vcf file)
 ```
-python3 indelConverter.py --in_file data/dash.vcf --in_reference /path/to/reference/ucsc.hg19.fasta --out_file data/out_dash.vcf --type vcf --to_dash true
+python3 indelConverter.py --in_file data/dash.vcf --in_reference /path/to/reference/ucsc.hg19.fasta --out_file data/out_dash.vcf --type vcf --to_dash
 ```
